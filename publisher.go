@@ -94,6 +94,16 @@ func (session *Session) handlePublish() {
 		}
 	}
 
+	defer func() {
+		// On exit, make sure that no goroutine is stuck in 'Push' because of a full queue
+		session.publishQueueIsFullCond.L.Lock()
+		if session.publishQueueIsFull {
+			session.publishQueueIsFull = false
+			session.publishQueueIsFullCond.Broadcast()
+		}
+		session.publishQueueIsFullCond.L.Unlock()
+	}()
+
 	for {
 
 		// Wait until we're ready
