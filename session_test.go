@@ -36,6 +36,12 @@ func declareQueues(conn *amqp.Connection, ch *amqp.Channel) error {
 		return err
 	}
 
+	// Make sure queue is empty
+	_, err = ch.QueuePurge("test-queue", false)
+	if err != nil {
+		return err
+	}
+
 	err = ch.QueueBind(q.Name,
 		"test-key",      // route key
 		"test-exchange", // exchange
@@ -50,9 +56,14 @@ func consumerTest(t *testing.T, expectedCount int, maxTime time.Duration) {
 	s.Address = testServerAddress
 	s.OnInit = declareQueues
 	s.Start()
-	defer s.Close()
+	defer func() {
+		err := s.Close()
+		if err != nil {
+			t.Error("Close returned error", err)
+		}
+	}()
 
-	ch, err := s.StreamQueue("test-queue")
+	ch, closech, err := s.StreamQueue("test-queue")
 	if err != nil {
 		t.Fatalf("StreamQueue returned error: %s", err)
 		return
@@ -79,6 +90,9 @@ func consumerTest(t *testing.T, expectedCount int, maxTime time.Duration) {
 				t.Logf("Recieved %d messages after %s", count, time.Since(start))
 				return
 			}
+		case <-closech:
+			t.Errorf("Received unexpected close-signal from streamqueue")
+			return
 		case <-timeout:
 			t.Errorf("Timeout reached before expected number of messages was seen - expected %d, got %d", expectedCount, count)
 			return
@@ -92,7 +106,12 @@ func publisherTest(t *testing.T, expectedCount int, maxTime time.Duration) {
 	s.OnInit = declareQueues
 	s.Publisher()
 	s.Start()
-	defer s.Close()
+	defer func() {
+		err := s.Close()
+		if err != nil {
+			t.Error("Close returned error", err)
+		}
+	}()
 
 	start := time.Now()
 	timeout := time.After(maxTime)
