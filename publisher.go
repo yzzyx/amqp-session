@@ -1,7 +1,6 @@
 package session
 
 import (
-	"sync"
 	"time"
 
 	"github.com/streadway/amqp"
@@ -176,51 +175,34 @@ func (session *Session) handlePublish() {
 	}
 }
 
+// drainPublish calls 'OnShutdown' once for each message in unconfirmedList
 func (session *Session) drainPublish() {
-	// drain publishChan
-	timeout := time.After(15 * time.Second)
-	wg := sync.WaitGroup{}
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case msg := <-session.publishChan:
-				// Ignore publishing errors at this stage
-				_ = session.intPublishMessage(msg)
-			case <-timeout:
-				return
-			}
-		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			session.unconfirmedMutex.RLock()
-			count := session.unconfirmedCount
-			session.unconfirmedMutex.RUnlock()
-			if count == 0 {
+	session.unconfirmedMutex.Lock()
+	defer session.unconfirmedMutex.Unlock()
+	for e := session.unconfirmedMessages.Front(); e != nil; e = e.Next() {
+		if msg, ok := e.Value.(*message); ok {
+			err := session.OnShutdown(msg.exchangeName, msg.routingKey, msg.data)
+			if err != nil {
 				break
 			}
+		}
+	}
 
-			select {
-			case confirm := <-session.notifyConfirm:
-				session.intConfirmReceived(confirm)
-			case <-timeout:
+	// Clear list
+	session.unconfirmedMessages.Init()
+
+	// Check for messages in publishChan that has not been sent yet
+	for {
+		select {
+		case msg := <-session.publishChan:
+			err := session.OnShutdown(msg.exchangeName, msg.routingKey, msg.data)
+			if err != nil {
 				return
 			}
+		default:
+			return
 		}
-	}()
-
-	wg.Wait()
-
-	// TODO - dump all unconfirmed messages to disk?
-	//for e := session.unconfirmedMessages.Front(); e != nil; e = e.Next() {
-	// writeToDisk(e.Value)...
-	//}
+	}
 }
 
 // Push will push data onto the queue, and wait for a confirm.

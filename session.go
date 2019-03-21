@@ -31,6 +31,11 @@ type Session struct {
 	// configure exchanges, queues, etc.
 	OnInit func(conn *amqp.Connection, ch *amqp.Channel) error
 
+	// OnShutdown is called when session is closed, once for each message still
+	// in the publishing queue. If OnShutdown returns error, no further messages will be processed.
+	// exchangeName and routeKey corresponds to the values used in the call to 'Push'
+	OnShutdown func(exchangeName string, routeKey string, msg amqp.Publishing) error
+
 	connection      *amqp.Connection
 	connectionMutex sync.RWMutex
 	channel         *amqp.Channel
@@ -268,7 +273,7 @@ func (session *Session) Close() error {
 	// Cancel handlePublish
 	close(session.done)
 
-	if session.isPublisher {
+	if session.isPublisher && session.OnShutdown != nil {
 		session.drainPublish()
 	}
 
