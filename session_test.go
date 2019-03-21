@@ -94,7 +94,7 @@ func consumerTest(t *testing.T, expectedCount int, maxTime time.Duration) {
 			t.Errorf("Received unexpected close-signal from streamqueue")
 			return
 		case <-timeout:
-			t.Errorf("Timeout reached before expected number of messages was seen - expected %d, got %d", expectedCount, count)
+			t.Errorf("Timeout reached before expected number of messages was seen - expected %d, got %d (after %s)", expectedCount, count, maxTime)
 			return
 		}
 	}
@@ -107,11 +107,17 @@ func publisherTest(t *testing.T, expectedCount int, maxTime time.Duration) {
 	s.Publisher()
 	s.Start()
 	defer func() {
+		// Wait for buffers to be flushed
+		time.Sleep(5 * time.Second)
 		err := s.Close()
 		if err != nil {
 			t.Error("Close returned error", err)
 		}
 	}()
+
+	for !s.IsReady() {
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	start := time.Now()
 	timeout := time.After(maxTime)
@@ -123,7 +129,7 @@ func publisherTest(t *testing.T, expectedCount int, maxTime time.Duration) {
 	for count := 0; count < expectedCount; count++ {
 		select {
 		case <-timeout:
-			t.Errorf("Timeout reached before expected number of messages was seen - expected %d, got %d", expectedCount, count)
+			t.Errorf("Timeout reached before expected number of messages was sent - expected %d, got %d (after %s)", expectedCount, count, maxTime)
 			return
 		default:
 			err := s.Push("test-exchange", "test-key", msg)
