@@ -67,3 +67,60 @@ loop:
 		t.Error("Expected at least half of sent messages to be confirmed")
 	}
 }
+
+func TestSession_PushUnconfirmed(t *testing.T) {
+	unconfirmedMessages := 0
+	sentMessages := 0
+
+	s := New()
+	s.Address = testServerAddress
+	s.OnInit = declareQueues
+	s.OnShutdown = func(exchangeName string, routeKey string, msg amqp.Publishing) error {
+		unconfirmedMessages++
+		return nil
+	}
+	s.Publisher()
+	s.Start()
+
+	// Wait until we're connected
+	for !s.IsReady() {
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	timeout := time.After(5 * time.Second)
+
+	msg := amqp.Publishing{
+		Body: []byte("test-message"),
+	}
+
+	numberOfMessages := 1000
+loop:
+	for i := 0; i < numberOfMessages; i++ {
+		select {
+		case <-timeout:
+			t.Errorf("Timeout occurred before all messages was sent")
+		default:
+			err := s.Push("test-exchange", "test-key", msg)
+			if err != nil {
+				t.Errorf("Push returned error: %s", err)
+				break loop
+			}
+			sentMessages++
+		}
+	}
+	// Wait for 5 seconds - all messages should now be flushed
+	time.Sleep(5 * time.Second)
+
+	err := s.Close()
+	if err != nil {
+		t.Errorf("Close returned error: %s", err)
+	}
+
+	if sentMessages < numberOfMessages {
+		t.Errorf("Not all messages were sent (%d of %d sent)", sentMessages, numberOfMessages)
+	}
+
+	if unconfirmedMessages > 0 {
+		t.Errorf("Expected number of unconfirmed messages to be 0, got %d", unconfirmedMessages)
+	}
+}
