@@ -1,9 +1,12 @@
 package session
 
 import (
-	"github.com/streadway/amqp"
+	"context"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/streadway/amqp"
 )
 
 func TestSession_PushSpeed(t *testing.T) {
@@ -47,8 +50,9 @@ loop:
 		}
 	}
 
-	// Close publishing session, which should call 'OnShutdown'
-	err := s.Close()
+	// Close publishing session immediately, which should call 'OnShutdown'
+	ctx, _ := context.WithTimeout(context.Background(), 0)
+	err := s.CloseWithContext(ctx)
 	if err != nil {
 		t.Error("Close returned error", err)
 	}
@@ -68,7 +72,7 @@ loop:
 	}
 }
 
-func TestSession_PushUnconfirmed(t *testing.T) {
+func testUnconfirmed(t *testing.T, shutdownTimeout time.Duration, unconfirmedExpected bool) {
 	unconfirmedMessages := 0
 	sentMessages := 0
 
@@ -93,7 +97,7 @@ func TestSession_PushUnconfirmed(t *testing.T) {
 		Body: []byte("test-message"),
 	}
 
-	numberOfMessages := 1000
+	numberOfMessages := 10000
 loop:
 	for i := 0; i < numberOfMessages; i++ {
 		select {
@@ -108,10 +112,10 @@ loop:
 			sentMessages++
 		}
 	}
-	// Wait for 5 seconds - all messages should now be flushed
-	time.Sleep(5 * time.Second)
 
-	err := s.Close()
+	fmt.Println("sent messages:", sentMessages)
+	ctx, _ := context.WithTimeout(context.Background(), shutdownTimeout)
+	err := s.CloseWithContext(ctx)
 	if err != nil {
 		t.Errorf("Close returned error: %s", err)
 	}
@@ -120,7 +124,22 @@ loop:
 		t.Errorf("Not all messages were sent (%d of %d sent)", sentMessages, numberOfMessages)
 	}
 
-	if unconfirmedMessages > 0 {
+	if unconfirmedExpected && unconfirmedMessages == 0 {
+		t.Errorf("Expected number of unconfirmed messages to be larger than 0, got 0")
+		return
+	} else if !unconfirmedExpected && unconfirmedMessages > 0 {
 		t.Errorf("Expected number of unconfirmed messages to be 0, got %d", unconfirmedMessages)
+		return
 	}
+}
+
+func TestSession_PushUnconfirmed(t *testing.T) {
+	// WHEN timeout is 5 seconds,
+	// THEN all queues should be flushed, and no unconfirmed messages be left
+	testUnconfirmed(t, 5*time.Second, false)
+
+	// WHEN timeout is 0,
+	// THEN unconfirmed messages should be left when we shut down
+	testUnconfirmed(t, 0, true)
+
 }

@@ -2,6 +2,7 @@ package session
 
 import (
 	"container/list"
+	"context"
 	"errors"
 	"log"
 	"os"
@@ -48,8 +49,10 @@ type Session struct {
 	reconnectChan   chan bool
 	log             *log.Logger
 
-	isReady      bool
-	isReadyMutex sync.RWMutex
+	isReady         bool
+	isReadyMutex    sync.RWMutex
+	inShutdown      bool
+	inShutdownMutex sync.RWMutex
 
 	isPublisher            bool
 	publishChan            chan *message // channel messages are read from
@@ -262,19 +265,53 @@ func (session *Session) IsReady() bool {
 	return session.isReady
 }
 
+// isInShutdown returns true if the session is shutting down
+func (session *Session) isInShutdown() bool {
+	session.inShutdownMutex.RLock()
+	defer session.inShutdownMutex.RUnlock()
+	return session.inShutdown
+}
+
 // Close will cleanly shutdown the channel and connection.
 func (session *Session) Close() error {
+	return session.CloseWithContext(context.Background())
+}
+
+// CloseWithContext performs the shutdown process with a context, e.g. with a timeout
+func (session *Session) CloseWithContext(ctx context.Context) error {
 	if !session.isReady {
 		return ErrAlreadyClosed
 	}
 
+	if session.isInShutdown() {
+		return ErrShutdown
+	}
+
+	session.inShutdownMutex.Lock()
+	session.inShutdown = true
+	session.inShutdownMutex.Unlock()
+
 	session.log.Println("Shutting down")
 
-	// Cancel handlePublish
+	if session.isPublisher {
+		session.drainPublish(ctx)
+	}
+
+	// Cancel handlePublish and StreamQueue
 	close(session.done)
 
-	if session.isPublisher && session.OnShutdown != nil {
-		session.drainPublish()
+	// Call OnShutdown for all messages still left in the queue
+	if session.OnShutdown != nil {
+		session.unconfirmedMutex.Lock()
+		defer session.unconfirmedMutex.Unlock()
+		for e := session.unconfirmedMessages.Front(); e != nil; e = e.Next() {
+			if msg, ok := e.Value.(*message); ok {
+				err := session.OnShutdown(msg.exchangeName, msg.routingKey, msg.data)
+				if err != nil {
+					break
+				}
+			}
+		}
 	}
 
 	session.channelMutex.Lock()

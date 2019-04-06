@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"time"
 
 	"github.com/streadway/amqp"
@@ -186,30 +187,25 @@ func (session *Session) handlePublish() {
 }
 
 // drainPublish calls 'OnShutdown' once for each message in unconfirmedList
-func (session *Session) drainPublish() {
-	session.unconfirmedMutex.Lock()
-	defer session.unconfirmedMutex.Unlock()
-	for e := session.unconfirmedMessages.Front(); e != nil; e = e.Next() {
-		if msg, ok := e.Value.(*message); ok {
-			err := session.OnShutdown(msg.exchangeName, msg.routingKey, msg.data)
-			if err != nil {
-				break
-			}
-		}
+func (session *Session) drainPublish(ctx context.Context) {
+	hasQueuedMessages := func() bool {
+		session.unconfirmedMutex.RLock()
+		defer session.unconfirmedMutex.RUnlock()
+
+		// Note that we check both the length of unconfirmed messages, and the length of the
+		// publishing channel, which can contain a lot of messages.
+		// Since we're not going to read from publishChan, it does not matter that it's not valid on return
+		return session.unconfirmedMessages.Len() > 0 || len(session.publishChan) > 0
 	}
 
-	// Clear list
-	session.unconfirmedMessages.Init()
-
-	// Check for messages in publishChan that has not been sent yet
+	// Drain all outgoing messages
 	for {
 		select {
-		case msg := <-session.publishChan:
-			err := session.OnShutdown(msg.exchangeName, msg.routingKey, msg.data)
-			if err != nil {
+		case <-time.After(50 * time.Millisecond):
+			if !hasQueuedMessages() {
 				return
 			}
-		default:
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -230,6 +226,10 @@ func (session *Session) Push(exchangeName, routingKey string, publishing amqp.Pu
 		exchangeName: exchangeName,
 		routingKey:   routingKey,
 		data:         publishing,
+	}
+
+	if session.isInShutdown() {
+		return ErrShutdown
 	}
 
 	for {

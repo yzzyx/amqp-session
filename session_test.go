@@ -2,11 +2,12 @@ package session
 
 import (
 	"bytes"
-	"github.com/streadway/amqp"
 	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/streadway/amqp"
 )
 
 var testServerAddress = "amqp://guest:guest@localhost:5672/"
@@ -107,8 +108,6 @@ func publisherTest(t *testing.T, expectedCount int, maxTime time.Duration) {
 	s.Publisher()
 	s.Start()
 	defer func() {
-		// Wait for buffers to be flushed
-		time.Sleep(5 * time.Second)
 		err := s.Close()
 		if err != nil {
 			t.Error("Close returned error", err)
